@@ -1,35 +1,69 @@
 #!/usr/bin/env bash
 set -e
 
-echo "Hello gh-topic!"
+#
+# INITIALIZE
+#
 
-# Snippets to help get started:
+__PROGRAM__=$(basename $0)
+__EXTENSION_NAME__=${__PROGRAM__##*-}
+__GH_EXTENSION_DIR__="$(dirname "$0")"
 
-# Determine if an executable is in the PATH
-# if ! type -p ruby >/dev/null; then
-#   echo "Ruby not found on the system" >&2
-#   exit 1
-# fi
+#__VERBOSE__=
 
-# Pass arguments through to another command
-# gh issue list "$@" -R cli/cli
+#
+# IMPORTS
+#
 
-# Using the gh api command to retrieve and format information
-# QUERY='
-#   query($endCursor: String) {
-#     viewer {
-#       repositories(first: 100, after: $endCursor) {
-#         nodes {
-#           nameWithOwner
-#           stargazerCount
-#         }
-#       }
-#     }
-#   }
-# '
-# TEMPLATE='
-#   {{- range $repo := .data.viewer.repositories.nodes -}}
-#     {{- printf "name: %s - stargazers: %v\n" $repo.nameWithOwner $repo.stargazerCount -}}
-#   {{- end -}}
-# '
-# exec gh api graphql -f query="${QUERY}" --paginate --template="${TEMPLATE}"
+source "$__GH_EXTENSION_DIR__/source/extras/addons.sh"
+source "$__GH_EXTENSION_DIR__/source/commands/add.help"
+
+#
+# VARS
+#
+
+#
+# HELPERS
+#
+
+help() {
+  echo -e "Manage repository topics
+
+${BOLD}USAGE${RESET}
+  gh ${__EXTENSION_NAME__} <command> [flags]
+
+${BOLD}COMMANDS${RESET}
+    add:  $(add:usage)
+
+"
+}
+
+#
+# LOGIC
+#
+
+if test $# -eq 0; then
+  help
+fi
+
+while test $# -gt 0; do
+  case "$1" in
+
+  add)
+    shift
+    ${__GH_EXTENSION_DIR__}/source/commands/add.sh $*
+    exit $?
+    ;;
+
+  rm)
+    shift
+    ${__GH_EXTENSION_DIR__}/source/commands/rm.sh $*
+    exit $?
+    ;;
+  *)
+    x:err "command[$1] not supported."
+    help
+    ;;
+
+  esac
+done

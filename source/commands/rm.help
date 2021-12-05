@@ -1,0 +1,15 @@
+add:usage() {
+    echo "Add topics to a given repository"
+}
+
+add:help() {
+    echo -e "$(add:usage)
+
+${BOLD}USAGE${RESET}
+    gh topic add [flags]
+
+${BOLD}FLAGS${RESET}
+    -r | --reponame <name>    A repository name or repository namespaced by the org name (Eg: org/reponame)
+         --names    <names>   Common separated list of topic names to add
+"
+}
