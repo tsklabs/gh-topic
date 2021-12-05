@@ -17,6 +17,7 @@ __GH_EXTENSION_DIR__="$(dirname "$0")"
 
 source "$__GH_EXTENSION_DIR__/source/extras/addons.sh"
 source "$__GH_EXTENSION_DIR__/source/commands/add.help"
+source "$__GH_EXTENSION_DIR__/source/commands/rm.help"
 
 #
 # VARS
@@ -34,6 +35,7 @@ ${BOLD}USAGE${RESET}
 
 ${BOLD}COMMANDS${RESET}
     add:  $(add:usage)
+    rm:  $(rm:usage)
 
 "
 }

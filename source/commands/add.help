@@ -1,15 +1,15 @@
-rm:usage() {
-    echo "Remove topics from a given repository"
+add:usage() {
+    echo "Add topics to a given repository"
 }
 
-rm:help() {
-    echo -e "$(rm:usage)
+add:help() {
+    echo -e "$(add:usage)
 
 ${BOLD}USAGE${RESET}
-    gh topic rm [flags]
+    gh topic add [flags]
 
 ${BOLD}FLAGS${RESET}
     -r | --reponame <name>    A repository name or repository namespaced by the org name (Eg: org/reponame)
-         --names    <names>   Common separated list of topic names to remove
+         --names    <names>   Common separated list of topic names to add
 "
 }
