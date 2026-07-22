@@ -8,6 +8,7 @@ __PROGRAM__=$(basename $0)
 __COMMAND_NAME__=${__PROGRAM__%%.*}
 __GH_EXTENSION_DIR__="$(dirname "$0")/../../"
 __COMMANDS_DIR__="$(dirname "$0")"
+__CORE_DIR__="${__GH_EXTENSION_DIR__}/source/core"
 
 #
 # IMPORTS
@@ -15,6 +16,7 @@ __COMMANDS_DIR__="$(dirname "$0")"
 
 source "${__GH_EXTENSION_DIR__}/source/extras/addons.sh"
 source "${__COMMANDS_DIR__}/${__COMMAND_NAME__}.help"
+source "${__CORE_DIR__}/topic.sh"
 
 #
 # VARS
@@ -23,22 +25,6 @@ source "${__COMMANDS_DIR__}/${__COMMAND_NAME__}.help"
 #
 # LOGIC
 #
-
-normalize:topics() {
-  local raw_topics="$1"
-  local rawtopic
-  local topic
-  local seen_topics=""
-
-  for rawtopic in ${raw_topics//,/ }; do
-    topic="$(echo "$rawtopic" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    [[ -z "${topic}" ]] && continue
-    if [[ " ${seen_topics} " != *" ${topic} "* ]]; then
-      echo "${topic}"
-      seen_topics="${seen_topics} ${topic}"
-    fi
-  done
-}
 
 main() {
 
@@ -49,18 +35,12 @@ main() {
     reponame \
     query \
     mutation \
-    template \
     data \
     repo_id \
     repo_topics \
-    repo_full_name \
-    topic_names_graphql \
-    topic \
-    escaped_topic
-
-  local -a requested_topics
-  local -a existing_topics
-  local -a merged_topics
+    new_topics \
+    merged_topics \
+    repo_full_name
 
   x:log "__COMMAND_NAME__[$__COMMAND_NAME__] __GH_EXTENSION_DIR__[$__GH_EXTENSION_DIR__] __COMMANDS_DIR__[$__COMMANDS_DIR__]"
 
@@ -81,13 +61,15 @@ main() {
   x:log "reponame: ${reponame}"
 
   query='
-    query repositoryIdAndTopicsFor($reponame: String!, $owner: String!) {
+    query repositoryIdWithTopicsFor($reponame: String!, $owner: String!) {
       repository(name: $reponame, owner: $owner) {
         id
         topics: repositoryTopics(first: 100) {
-          nodes {
-            topic {
-              name
+          edges {
+            node {
+              topic {
+                name
+              }
             }
           }
         }
@@ -95,53 +77,54 @@ main() {
     }
   '
 
-  template='{{ .data.repository.id }}{{ "\n" }}{{ range .data.repository.topics.nodes }}{{ .topic.name }}{{ "\n" }}{{ end }}'
+  local template='{{ .data.repository.id }}:{{ range $idx, $element := .data.repository.topics.edges }}{{ if $idx }} {{end}}{{ $element.node.topic.name }}{{ end }}'
+
+  mutation='
+    mutation updateTopicsForRepo($repoId: ID!, $names: [String!]!) {
+      updateTopics(input: {repositoryId: $repoId, topicNames: $names}) {
+        invalidTopicNames
+        repository {
+          repositoryTopics(first: 100) {
+            nodes {
+              topic {
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+  '
 
   repo_full_name="${owner}/${reponame}"
 
-  x:log "Getting repo id and topics using a graphql query..."
+  x:log "Getting repo id and current topics using a graphql query..."
   data=$(gh api graphql -F owner="${owner}" -F reponame="${reponame}" \
     -f query="${query}" \
-    -t "${template}" 2>/dev/null)
-  x:check $? "Repository[${repo_full_name}] not found. Unable to get its repository ID/topics"
+    -t "$template" 2>/dev/null)
+  x:check $? "Repository[${repo_full_name}] not found. Unable to get its repository ID"
 
-  repo_id="$(echo "${data}" | head -n 1)"
-  [[ -z "${repo_id}" ]] && x:err "Repository[${repo_full_name}] not found. Unable to get its repository ID"
-  x:log "repo_id: ${repo_id}"
+  repo_id="$(echo "$data" | cut -d\: -f 1)"
+  repo_topics="$(echo "$data" | cut -d\: -f 2)"
+  x:log "repo_id: ${repo_id} repo_topics: ${repo_topics}"
 
-  mapfile -t requested_topics < <(normalize:topics "${topics}")
-  [[ ${#requested_topics[@]} -eq 0 ]] && x:err "No valid topics provided in --names[${topics}]"
+  x:log "Parsing requested topics[${topics}]..."
+  new_topics=$(topic:parse "$topics")
+  x:log "new_topics: ${new_topics}"
 
-  repo_topics="$(echo "${data}" | tail -n +2 | tr '\n' ',')"
-  mapfile -t existing_topics < <(normalize:topics "${repo_topics}")
+  merged_topics=$(topic:union "${repo_topics}" "${new_topics}")
+  x:log "merged_topics: ${merged_topics}"
 
-  merged_topics=("${existing_topics[@]}")
-  for topic in "${requested_topics[@]}"; do
-    if [[ " ${merged_topics[*]} " != *" ${topic} "* ]]; then
-      merged_topics+=("${topic}")
-    fi
+  local -a name_args=()
+  for topic in $merged_topics; do
+    name_args+=(-F "names[]=${topic}")
   done
 
-  topic_names_graphql=""
-  for topic in "${merged_topics[@]}"; do
-    escaped_topic="${topic//\"/\\\"}"
-    [[ -n "${topic_names_graphql}" ]] && topic_names_graphql+=", "
-    topic_names_graphql+="\"${escaped_topic}\""
-  done
-
-  mutation="
-    mutation updateTopicsOnRepo {
-      updateTopics(input: {repositoryId: \"${repo_id}\", topicNames: [${topic_names_graphql}]}) {
-        clientMutationId
-      }
-    }
-  "
-
-  x:log "Updating topics[${topic_names_graphql}] on repo[${repo_full_name}]..."
-  gh api graphql \
+  x:log "Adding topics[${new_topics}] to repo[${repo_full_name}] of id[${repo_id}] using a graphql mutation..."
+  gh api graphql "${name_args[@]}" -F repoId="${repo_id}" \
     -f query="${mutation}" \
     --silent 2>/dev/null
-  x:check $? "Fail to update topics on repository[${repo_full_name}]"
+  x:check $? "Fail to add topics[${new_topics}] to the repository[${repo_full_name}]"
 
   x:success "Topics[$topics] added to repo[${repo_full_name}]"
 
