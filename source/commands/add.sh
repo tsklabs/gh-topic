@@ -24,6 +24,22 @@ source "${__COMMANDS_DIR__}/${__COMMAND_NAME__}.help"
 # LOGIC
 #
 
+normalize:topics() {
+  local raw_topics="$1"
+  local rawtopic
+  local topic
+  local seen_topics=""
+
+  for rawtopic in ${raw_topics//,/ }; do
+    topic="$(echo "$rawtopic" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -z "${topic}" ]] && continue
+    if [[ " ${seen_topics} " != *" ${topic} "* ]]; then
+      echo "${topic}"
+      seen_topics="${seen_topics} ${topic}"
+    fi
+  done
+}
+
 main() {
 
   local input_reponame=$1
@@ -33,9 +49,18 @@ main() {
     reponame \
     query \
     mutation \
-    default_loop_separator \
+    template \
+    data \
     repo_id \
-    repo_full_name
+    repo_topics \
+    repo_full_name \
+    topic_names_graphql \
+    topic \
+    escaped_topic
+
+  local -a requested_topics
+  local -a existing_topics
+  local -a merged_topics
 
   x:log "__COMMAND_NAME__[$__COMMAND_NAME__] __GH_EXTENSION_DIR__[$__GH_EXTENSION_DIR__] __COMMANDS_DIR__[$__COMMANDS_DIR__]"
 
@@ -56,53 +81,67 @@ main() {
   x:log "reponame: ${reponame}"
 
   query='
-    query repositoryIdFor($reponame: String!, $owner: String!) {
+    query repositoryIdAndTopicsFor($reponame: String!, $owner: String!) {
       repository(name: $reponame, owner: $owner) {
         id
-      }
-    }
-  '
-
-  mutation='
-    mutation addTopicToRepoWithIdOwnedBy($repoId: String!, $topic: String!) {
-      acceptTopicSuggestion(input: {repositoryId: $repoId,  name: $topic}) {
-        topic {
-          name
+        topics: repositoryTopics(first: 100) {
+          nodes {
+            topic {
+              name
+            }
+          }
         }
       }
     }
   '
 
+  template='{{ .data.repository.id }}{{ "\n" }}{{ range .data.repository.topics.nodes }}{{ .topic.name }}{{ "\n" }}{{ end }}'
+
   repo_full_name="${owner}/${reponame}"
 
-  x:log "Getting repo id using a graphql query..."
-  repo_id=$(gh api graphql -F owner="${owner}" -F reponame="${reponame}" \
+  x:log "Getting repo id and topics using a graphql query..."
+  data=$(gh api graphql -F owner="${owner}" -F reponame="${reponame}" \
     -f query="${query}" \
-    -q '.data.repository.id' 2>/dev/null)
-  x:check $? "Repository[${repo_full_name}] not found. Unable to get its repository ID"
+    -t "${template}" 2>/dev/null)
+  x:check $? "Repository[${repo_full_name}] not found. Unable to get its repository ID/topics"
+
+  repo_id="$(echo "${data}" | head -n 1)"
+  [[ -z "${repo_id}" ]] && x:err "Repository[${repo_full_name}] not found. Unable to get its repository ID"
   x:log "repo_id: ${repo_id}"
 
-  x:log "Adding topics[${topics}] to repo[${repo_full_name}..."
+  mapfile -t requested_topics < <(normalize:topics "${topics}")
+  [[ ${#requested_topics[@]} -eq 0 ]] && x:err "No valid topics provided in --names[${topics}]"
 
-  default_loop_separator=$IFS
-  IFS=","
-  for rawtopic in $topics; do
+  repo_topics="$(echo "${data}" | tail -n +2 | tr '\n' ',')"
+  mapfile -t existing_topics < <(normalize:topics "${repo_topics}")
 
-    x:log "Trimming rawtopic[${rawtopic}]..."
-
-    topic=$(echo $rawtopic | sed -e 's/^[[:space:]]*//')
-    x:check $?
-    x:log "topic[${topic}] trimmed."
-
-    x:log "Adding topic[${topic}] to repo[${repo_full_name}] of id[${repo_id}] using a graphql mutation..."
-    gh api graphql -F repoId="${repo_id}" -F topic="${topic}" \
-      -f query="${mutation}" \
-      --silent 2>/dev/null
-    x:check $? "Fail to add topic[${topic}] to the repository[${repo_full_name}]"
-    x:log "Topic[${topic}] added."
-
+  merged_topics=("${existing_topics[@]}")
+  for topic in "${requested_topics[@]}"; do
+    if [[ " ${merged_topics[*]} " != *" ${topic} "* ]]; then
+      merged_topics+=("${topic}")
+    fi
   done
-  IFS=${default_loop_separator}
+
+  topic_names_graphql=""
+  for topic in "${merged_topics[@]}"; do
+    escaped_topic="${topic//\"/\\\"}"
+    [[ -n "${topic_names_graphql}" ]] && topic_names_graphql+=", "
+    topic_names_graphql+="\"${escaped_topic}\""
+  done
+
+  mutation="
+    mutation updateTopicsOnRepo {
+      updateTopics(input: {repositoryId: \"${repo_id}\", topicNames: [${topic_names_graphql}]}) {
+        clientMutationId
+      }
+    }
+  "
+
+  x:log "Updating topics[${topic_names_graphql}] on repo[${repo_full_name}]..."
+  gh api graphql \
+    -f query="${mutation}" \
+    --silent 2>/dev/null
+  x:check $? "Fail to update topics on repository[${repo_full_name}]"
 
   x:success "Topics[$topics] added to repo[${repo_full_name}]"
 
