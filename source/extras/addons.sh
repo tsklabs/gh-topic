@@ -6,7 +6,7 @@ YELLOW="\033[0;33m"
 GREY="\033[0;37m"
 
 x:isverbose() {
-  [[ $__VERBOSE__ == "true" ]] && return 0 || return 1
+  [[ $__VERBOSE__ == "true" ]] && return 1 || return 0
 }
 
 x:log() {
