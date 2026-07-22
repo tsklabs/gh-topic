@@ -28,10 +28,11 @@ source "${__CORE_DIR__}/topic.sh"
 
 main() {
 
-  local reponame=$1
+  local input_reponame=$1
   local topics=$2
 
   local owner
+  local reponame
 
   local query \
     mutation \
@@ -45,16 +46,21 @@ main() {
 
   x:log "__COMMAND_NAME__[$__COMMAND_NAME__] __GH_EXTENSION_DIR__[$__GH_EXTENSION_DIR__] __COMMANDS_DIR__[$__COMMANDS_DIR__]"
 
-  x:log "Getting owner from reponame[${reponame}]..."
-  owner="$(echo ${reponame%%/*})"
-  x:log "owner: ${owner}"
-
-  if [[ "${owner}" == "${reponame}" ]]; then
-    x:log "Setting default git user has owner..."
-    owner="$(git config --global user.name)"
-    x:check $?
+  x:log "Resolving owner/reponame from input_reponame[${input_reponame}]..."
+  if [[ "${input_reponame}" == */* ]]; then
+    owner="${input_reponame%%/*}"
+    reponame="${input_reponame##*/}"
+  else
+    reponame="${input_reponame}"
+    x:log "Setting default authenticated gh user as owner..."
+    owner="$(gh api user -q '.login' 2>/dev/null)"
+    x:check $? "Unable to detect default GitHub owner. Please provide --reponame as owner/repo."
+    [[ -z "${owner}" ]] && x:err "Unable to detect default GitHub owner. Please provide --reponame as owner/repo."
     x:log "owner[${owner}] set as default"
   fi
+
+  x:log "owner: ${owner}"
+  x:log "reponame: ${reponame}"
 
   query='
     query repositoryIdWithTopicsFor($reponame: String!, $owner: String!) {
