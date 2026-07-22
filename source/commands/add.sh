@@ -8,6 +8,7 @@ __PROGRAM__=$(basename $0)
 __COMMAND_NAME__=${__PROGRAM__%%.*}
 __GH_EXTENSION_DIR__="$(dirname "$0")/../../"
 __COMMANDS_DIR__="$(dirname "$0")"
+__CORE_DIR__="${__GH_EXTENSION_DIR__}/source/core"
 
 #
 # IMPORTS
@@ -15,6 +16,7 @@ __COMMANDS_DIR__="$(dirname "$0")"
 
 source "${__GH_EXTENSION_DIR__}/source/extras/addons.sh"
 source "${__COMMANDS_DIR__}/${__COMMAND_NAME__}.help"
+source "${__CORE_DIR__}/topic.sh"
 
 #
 # VARS
@@ -33,8 +35,11 @@ main() {
     reponame \
     query \
     mutation \
-    default_loop_separator \
+    data \
     repo_id \
+    repo_topics \
+    new_topics \
+    merged_topics \
     repo_full_name
 
   x:log "__COMMAND_NAME__[$__COMMAND_NAME__] __GH_EXTENSION_DIR__[$__GH_EXTENSION_DIR__] __COMMANDS_DIR__[$__COMMANDS_DIR__]"
@@ -56,18 +61,36 @@ main() {
   x:log "reponame: ${reponame}"
 
   query='
-    query repositoryIdFor($reponame: String!, $owner: String!) {
+    query repositoryIdWithTopicsFor($reponame: String!, $owner: String!) {
       repository(name: $reponame, owner: $owner) {
         id
+        topics: repositoryTopics(first: 100) {
+          edges {
+            node {
+              topic {
+                name
+              }
+            }
+          }
+        }
       }
     }
   '
 
+  local template='{{ .data.repository.id }}:{{ range $idx, $element := .data.repository.topics.edges }}{{ if $idx }} {{end}}{{ $element.node.topic.name }}{{ end }}'
+
   mutation='
-    mutation addTopicToRepoWithIdOwnedBy($repoId: String!, $topic: String!) {
-      acceptTopicSuggestion(input: {repositoryId: $repoId,  name: $topic}) {
-        topic {
-          name
+    mutation updateTopicsForRepo($repoId: ID!, $names: [String!]!) {
+      updateTopics(input: {repositoryId: $repoId, topicNames: $names}) {
+        invalidTopicNames
+        repository {
+          repositoryTopics(first: 100) {
+            nodes {
+              topic {
+                name
+              }
+            }
+          }
         }
       }
     }
@@ -75,34 +98,33 @@ main() {
 
   repo_full_name="${owner}/${reponame}"
 
-  x:log "Getting repo id using a graphql query..."
-  repo_id=$(gh api graphql -F owner="${owner}" -F reponame="${reponame}" \
+  x:log "Getting repo id and current topics using a graphql query..."
+  data=$(gh api graphql -F owner="${owner}" -F reponame="${reponame}" \
     -f query="${query}" \
-    -q '.data.repository.id' 2>/dev/null)
+    -t "$template" 2>/dev/null)
   x:check $? "Repository[${repo_full_name}] not found. Unable to get its repository ID"
-  x:log "repo_id: ${repo_id}"
 
-  x:log "Adding topics[${topics}] to repo[${repo_full_name}..."
+  repo_id="$(echo "$data" | cut -d\: -f 1)"
+  repo_topics="$(echo "$data" | cut -d\: -f 2)"
+  x:log "repo_id: ${repo_id} repo_topics: ${repo_topics}"
 
-  default_loop_separator=$IFS
-  IFS=","
-  for rawtopic in $topics; do
+  x:log "Parsing requested topics[${topics}]..."
+  new_topics=$(topic:parse "$topics")
+  x:log "new_topics: ${new_topics}"
 
-    x:log "Trimming rawtopic[${rawtopic}]..."
+  merged_topics=$(topic:union "${repo_topics}" "${new_topics}")
+  x:log "merged_topics: ${merged_topics}"
 
-    topic=$(echo $rawtopic | sed -e 's/^[[:space:]]*//')
-    x:check $?
-    x:log "topic[${topic}] trimmed."
-
-    x:log "Adding topic[${topic}] to repo[${repo_full_name}] of id[${repo_id}] using a graphql mutation..."
-    gh api graphql -F repoId="${repo_id}" -F topic="${topic}" \
-      -f query="${mutation}" \
-      --silent 2>/dev/null
-    x:check $? "Fail to add topic[${topic}] to the repository[${repo_full_name}]"
-    x:log "Topic[${topic}] added."
-
+  local -a name_args=()
+  for topic in $merged_topics; do
+    name_args+=(-F "names[]=${topic}")
   done
-  IFS=${default_loop_separator}
+
+  x:log "Adding topics[${new_topics}] to repo[${repo_full_name}] of id[${repo_id}] using a graphql mutation..."
+  gh api graphql "${name_args[@]}" -F repoId="${repo_id}" \
+    -f query="${mutation}" \
+    --silent 2>/dev/null
+  x:check $? "Fail to add topics[${new_topics}] to the repository[${repo_full_name}]"
 
   x:success "Topics[$topics] added to repo[${repo_full_name}]"
 

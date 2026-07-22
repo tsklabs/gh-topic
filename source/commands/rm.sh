@@ -39,9 +39,10 @@ main() {
     data
 
   local repo_id \
-    repo_topics
+    repo_topics \
+    remove_topics \
+    remaining_topics
 
-  local default_loop_separator
   local repo_full_name
 
   x:log "__COMMAND_NAME__[$__COMMAND_NAME__] __GH_EXTENSION_DIR__[$__GH_EXTENSION_DIR__] __COMMANDS_DIR__[$__COMMANDS_DIR__]"
@@ -82,10 +83,17 @@ main() {
   local template='{{ .data.repository.id }}:{{ range $idx, $element := .data.repository.topics.edges }}{{ if $idx }} {{end}}{{ $element.node.topic.name }}{{ end }}'
 
   mutation='
-    mutation removeTopicToRepoWithIdOwnedBy($repoId: String!, $topic: String!) {
-      declineTopicSuggestion(input: { repositoryId: $repoId, name: $topic, reason: NOT_RELEVANT }) {
-        topic {
-          name
+    mutation updateTopicsForRepo($repoId: ID!, $names: [String!]!) {
+      updateTopics(input: {repositoryId: $repoId, topicNames: $names}) {
+        invalidTopicNames
+        repository {
+          repositoryTopics(first: 100) {
+            nodes {
+              topic {
+                name
+              }
+            }
+          }
         }
       }
     }
@@ -93,46 +101,41 @@ main() {
 
   repo_full_name="${owner}/${reponame}"
 
-  x:log "Getting repo id using a graphql query..."
+  x:log "Getting repo id and current topics using a graphql query..."
   data=$(gh api graphql -F owner="${owner}" -F reponame="${reponame}" \
     -f query="${query}" \
     -t "$template" 2>/dev/null)
   x:check $? "Repository[${repo_full_name}] not found. Unable to get its repository ID"
 
-  repo_id="$(echo $data | cut -d\: -f 1)"
-  repo_topics="$(echo $data | cut -d\: -f 2)"
-  x:log "repo_id: ${repo_id}\
-  repo_topics: ${repo_topics}"
+  repo_id="$(echo "$data" | cut -d\: -f 1)"
+  repo_topics="$(echo "$data" | cut -d\: -f 2)"
+  x:log "repo_id: ${repo_id} repo_topics: ${repo_topics}"
 
-  x:log "Checking if the given topics[${topics}] are part of repository topics..."
-  for rawtopic in $topics; do
+  x:log "Parsing requested topics[${topics}]..."
+  remove_topics=$(topic:parse "$topics")
+  x:log "remove_topics: ${remove_topics}"
 
-    x:log "Trimming rawtopic[${rawtopic}]..."
-    topic="$(echo $rawtopic | sed -e 's/^[[:space:]]*//')"
-
+  x:log "Checking if the given topics[${remove_topics}] are part of repository topics..."
+  for topic in $remove_topics; do
     if ! topic:contains "$topic" "${repo_topics}"; then
       x:err "Topic[$topic] not found on repository[${repo_full_name}]  — topics[${repo_topics}]"
     fi
-
   done
 
-  x:log "Removing topics[${topics}] to repo[${repo_full_name}..."
+  remaining_topics=$(topic:difference "${repo_topics}" "${remove_topics}")
+  x:log "remaining_topics: ${remaining_topics}"
 
-  for rawtopic in $topics; do
-
-    x:log "Trimming rawtopic[${rawtopic}]..."
-    topic=$(echo $rawtopic | sed -e 's/^[[:space:]]*//')
-    x:check $?
-    x:log "topic[${topic}] trimmed."
-
-    x:log "Removing topic[${topic}] to repo[${repo_full_name}] of id[${repo_id}] using a graphql mutation..."
-    gh api graphql -F repoId="${repo_id}" -F topic="${topic}" \
-      -f query="${mutation}" \
-      --silent 2>/dev/null
-    x:check $? "Fail to remove topic[${topic}] to the repository[${repo_full_name}]"
-    x:log "Topic[${topic}] removed."
-
+  local -a name_args=()
+  for topic in $remaining_topics; do
+    name_args+=(-F "names[]=${topic}")
   done
+  [[ ${#name_args[@]} -eq 0 ]] && name_args=(-F "names[]")
+
+  x:log "Removing topics[${remove_topics}] from repo[${repo_full_name}] of id[${repo_id}] using a graphql mutation..."
+  gh api graphql "${name_args[@]}" -F repoId="${repo_id}" \
+    -f query="${mutation}" \
+    --silent 2>/dev/null
+  x:check $? "Fail to remove topics[${remove_topics}] from the repository[${repo_full_name}]"
 
   x:success "Topics[$topics] removed to repo[${repo_full_name}]"
 
@@ -190,6 +193,4 @@ done
 # EXEC
 #
 
-space_separated_topics="${arg_topics//,/ }"
-
-main "${arg_reponame}" "$space_separated_topics"
+main "${arg_reponame}" "$arg_topics"
